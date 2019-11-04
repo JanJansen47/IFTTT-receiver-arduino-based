@@ -55,7 +55,7 @@ void check()
   }
 }
 
-//..........WiFiManager callback...........
+//..........WiFiManager callback.............
 void saveConfigCallback () {
   shouldSaveConfig = true;
 }
@@ -177,7 +177,7 @@ void setup() {
 
   if (!digitalRead(updateButton)) {
     allemaal(0, 0, 250, 0, 0, 250, 0, 0, 250);
-    if (!wifiManager.startConfigPortal("xxxxxxxx", "vvvvvvvvv")) {
+    if (!wifiManager.startConfigPortal("Lookforme", "12345678")) {
       Serial.println("failed to connect and hit timeout");
       allemaal(250, 0, 0, 250, 0, 0, 0, 0, 250);
       delay(3000);
