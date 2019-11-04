@@ -1,7 +1,6 @@
 #include <FS.h>                   //SPIFFS
 #include <ESP8266httpUpdate.h>
 #include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager
-#include "oled_display.h"
 #include "nas.h"
 #include "neopixel.h"
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
