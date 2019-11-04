@@ -1,0 +1,265 @@
+#include <FS.h>                   //SPIFFS
+#include <ESP8266httpUpdate.h>
+#include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager
+#include "oled_display.h"
+#include "nas.h"
+#include "neopixel.h"
+#include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
+#include <Ticker.h>               //Ticker Library voor de watchdog
+#define BAUD_RATE 115200
+#include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
+
+//watchdog
+volatile bool signal = true;
+Ticker watchdog;
+
+
+//I/O
+#define updateButton    4   //D2  Button to update the firmware
+#define SagA1           12  //D6
+#define SagA3           14  //D5
+#define SagA2           13  //D7
+
+#define ON 1
+#define OFF 0
+
+boolean readSagA3, readSagA1, readSagA2, memSagA3, memSagA1, memSagA2;
+
+
+//Web update (OTA) via  NAS
+#define BOOT_AFTER_UPDATE true  // Takes care esp8266 loads image after eboot
+
+int versie = 3;
+
+char Download_server [80] = "";
+WiFiClientSecure client;
+ESP8266WebServer server(80);
+
+//parameters to set  SSID, password etc.
+
+WiFiManagerParameter custom_Download_server("Download_server", "Download_server", Download_server, 70);
+
+//flag for saving data
+bool shouldSaveConfig = false;
+
+void check()
+{
+  Serial.println( "check & restart");
+  if (signal == true) {
+    Serial.println("no worries");
+    signal = false;
+  }
+  else {
+    delay(10000); Serial.println("restart");
+    ESP.restart();
+  }
+}
+
+//..........WiFiManager callback...........
+void saveConfigCallback () {
+  shouldSaveConfig = true;
+}
+
+bool read_configuration_from_SPIFFS () {
+  if (SPIFFS.begin()) {
+    Serial.println("mounted file system");
+    if (SPIFFS.exists("/config.json")) {
+      //file exists, reading and loading
+      Serial.println("reading config file");
+      File configFile = SPIFFS.open("/config.json", "r");
+      if (configFile) {
+        Serial.println("opened config file");
+        size_t size = configFile.size();
+        // Allocate a buffer to store contents of the file.
+        std::unique_ptr<char[]> buf(new char[size]);
+
+        configFile.readBytes(buf.get(), size);
+        DynamicJsonBuffer jsonBuffer;
+        JsonObject& json = jsonBuffer.parseObject(buf.get());
+        json.printTo(Serial);
+        if (json.success()) {
+          Serial.println("\nparsed json");
+          //strcpy(IFTTT_key, json["IFTTT_key"]);
+          strcpy(Download_server, json["Download_server"]);
+          return true;
+        } else {
+          Serial.println("failed to load json config");
+          return false;
+        }
+      }
+    }
+  } else {
+    Serial.println("failed to mount FS");
+    return false;
+  }
+  //end read
+}
+
+bool save_configuration_inti_SPIFFS () {
+  //read updated parameters
+  strcpy(Download_server, custom_Download_server.getValue());
+  Serial.println("saving config");
+  DynamicJsonBuffer jsonBuffer;
+  JsonObject& json = jsonBuffer.createObject();
+  json["Download_server"] =    Download_server;
+  File configFile = SPIFFS.open("/config.json", "w");
+  if (!configFile) {
+    Serial.println("failed to open config file for writing");
+  }
+  json.printTo(Serial);
+  json.printTo(configFile);
+  configFile.close();
+  //end save
+}
+
+void handleRoot() {
+  digitalWrite(led, 1);
+  server.send(200, "text/plain", "hello reader");
+  digitalWrite(led, 0);
+}
+
+void handleNotFound() {
+  
+  String message = "File Not Found\n\n";
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET) ? "GET" : "POST";
+  message += "\nArguments: ";
+  message += server.args();
+  message += "\n";
+  for (uint8_t i = 0; i < server.args(); i++) {
+    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+  }
+  server.send(404, "text/plain", message);
+  
+}
+void setup() {
+
+  Serial.begin(115200);
+  delay(200);
+  init_neo_pixel();
+  pinMode(updateButton, INPUT_PULLUP);
+  pinMode(SagA1,  OUTPUT);
+  pinMode(SagA2,  OUTPUT);
+  pinMode(SagA3,  OUTPUT);
+
+
+  // storage and retrieval of parameters from SPIFFS......
+  //clean FS, for testing  (first time usage) 
+  //SPIFFS.format();
+  watchdog.attach(180, check);  // watchdog timer 
+  blink_simpel(0,  1, 300, 200, 0, 0);
+  blink_simpel(1,  1, 300, 0, 200, 0);
+  blink_simpel(2,  1, 300, 0, 0, 200);
+
+  //read parameters stored in SPIFFS
+  read_configuration_from_SPIFFS ();  //  Google sheet token. Download URL address
+
+  // WiFi manager with extensions
+  WiFiManager wifiManager;
+  //set config save notify callback
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
+  wifiManager.setConfigPortalTimeout(300);  // 5 minutes timeout of the configuration portal.
+  //extra parameters presented in ESP8266 AP web interface
+  wifiManager.addParameter(&custom_Download_server);
+
+  for (int i = 0; i < 10; i = i + 1) {
+
+    allemaal(200, 0, 0, 0, 200, 0, 0, 0, 200);
+    delay(100);
+    allemaal(0, 200, 0, 0, 0, 200, 200, 0, 0);
+    delay(100);
+    allemaal(0, 0, 200, 200, 0, 0, 0, 200, 0);
+    delay(100);
+  }
+  allemaal(0, 0, 0, 0, 0, 0, 0, 0, 0);
+
+  if (!digitalRead(updateButton)) {
+    allemaal(0, 0, 250, 0, 0, 250, 0, 0, 250);
+    if (!wifiManager.startConfigPortal("xxxxxxxx", "vvvvvvvvv")) {
+      Serial.println("failed to connect and hit timeout");
+      allemaal(250, 0, 0, 250, 0, 0, 0, 0, 250);
+      delay(3000);
+      //reset and try again, or maybe put it to deep s
+      ESP.reset();
+      delay(5000);
+    }
+    //Nu ben je verbonden met WiFi
+
+
+    allemaal(0, 250, 0, 0, 250, 0, 0, 250, 0);
+  }
+
+  if (shouldSaveConfig) {
+    save_configuration_inti_SPIFFS ();
+  }
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+  if (MDNS.begin("esp8266")) {
+    Serial.println("MDNS responder started");
+  }
+
+  server.on("/", handleRoot);
+
+  server.on("/SagA1_on", []() {
+    server.send(200, "text/plain", "SagA1_on");
+    Serial.println("SagA1_on");
+    setled(0,200,0,0);//lood aan
+    digitalWrite(SagA1, ON);
+  });
+  server.on("/SagA1_off", []() {
+    server.send(200, "text/plain", "SagA1_off");
+    Serial.println("SagA1_off");
+    setled(0,0,0,250);//lood aan
+    digitalWrite(SagA1, OFF);
+  });
+  server.on("/SagA2_on", []() {
+    server.send(200, "text/plain", "SagA2_on");
+    Serial.println("SagA2_on");
+    setled(1,200,0,0);//rood aan
+    digitalWrite(SagA2, ON);
+  });
+  server.on("/SagA2_off", []() {
+    server.send(200, "text/plain", "SagA2_off");
+    Serial.println("SagA2_off");
+    setled(1,0,0,250);//blauw aan
+    digitalWrite(SagA2, OFF);
+  });
+  server.on("/SagA3_on", []() {
+    server.send(200, "text/plain", "SagA3_on");
+    Serial.println("SagA3_on");
+    setled(2,200,0,0);//rood aan
+    digitalWrite(SagA3, ON);
+  });
+  server.on("/SagA3_off", []() {
+    server.send(200, "text/plain", "SagA3_off");
+    Serial.println("SagA3_off");
+    setled(2,0,0,250);//blauw aan
+    digitalWrite(SagA3, OFF);
+  });
+  server.onNotFound(handleNotFound);
+
+  server.begin();
+  Serial.println("HTTP server started");
+
+}
+
+
+void loop() {
+
+  // Update firmware ?
+  if (!digitalRead(updateButton)) {
+    show(  "Update software?", "druk update button meer dan 5 sec");
+    if (!digitalRead(updateButton)) {
+      delay(5000) ;
+    };
+    if ( !digitalRead(updateButton)) {
+      WebUpdate(Download_server);
+    };
+  };
+
+  server.handleClient();
+  signal = true;  // yes I'm alive
+}
